@@ -25,7 +25,7 @@ description: 处理抖音群视频的自动化蒸馏 Skill。当用户要求处�
 
 ## 执行环境与工具
 
-- 归档根目录：`<ARCHIVE_ROOT>`（执行时替换为实际工作目录），内部固定结构见「产物规范」。
+- 归档根目录示例：`<ARCHIVE_ROOT>\`（按实际会话调整），内部固定结构见「产物规范」。
 - 抖音网页版：`https://www.douyin.com/jingxuan`，已登录用户会话（必要时让用户接管登录）。
 - Python 运行解释器：`python`（已装 requests、imageio-ffmpeg；系统无 ffmpeg 时用 `imageio_ffmpeg.get_ffmpeg_exe()`）。
 - 飞书链路：`lark-cli drive +upload` / `lark-cli minutes +upload` / `lark-cli vc +notes`。
@@ -44,9 +44,9 @@ description: 处理抖音群视频的自动化蒸馏 Skill。当用户要求处�
 
 ## 阶段 2：下载视频
 
-1. 复用/参考 `scripts/batch_download.py`：requests 分段下载到 `<ARCHIVE_ROOT>/raw/<视频ID>.mp4`，带 `User-Agent` + `Referer: https://www.douyin.com/`；已存在且 >100KB 的跳过。
+1. 复用/参考 `distill_tools/batch_download.py`：requests 分段下载到 `<ARCHIVE_ROOT>/raw/<视频ID>.mp4`，带 `User-Agent` + `Referer: https://www.douyin.com/`；已存在且 >100KB 的跳过。
 2. 失败项记录原因（链接失效/需要登录/无直链），放入失败清单继续，不中断流水线。
-3. 视频下载后立即批量转 MP3（`scripts/batch_extract_audio.py`：imageio_ffmpeg，`-ac 1 -ar 16000 -b:a 64k`）到 `raw/<视频ID>.mp3`，供妙记上传（妙记直传 mp4 超配额，必须用音频）。
+3. 视频下载后立即批量转 MP3（`batch_extract_audio.py`：imageio_ffmpeg，`-ac 1 -ar 16000 -b:a 64k`）到 `raw/<视频ID>.mp3`，供妙记上传（妙记直传 mp4 超配额，必须用音频）。
 
 ## 阶段 3：转录（飞书妙记链路）
 
@@ -58,19 +58,21 @@ description: 处理抖音群视频的自动化蒸馏 Skill。当用户要求处�
 3. 产物落盘：`minutes/artifact-<视频ID>-<minute_token>/transcript.txt`（含逐字稿、摘要、关键词、时长）。
 4. 转录为空/无有效语音（背景音乐覆盖、纯图文帖、无画面纯音频流）：保留元信息，分类阶段按「无有效语音」处理，蒸馏依据标题/话题标签并如实标注。
 
-## 阶段 4：自动分类
+## 阶段 4：自动分类（省 token：优先脚本，AI 只复核边界案例）
 
-1. 读取 `references/classification.md` 的完整分类规则（6 类体系 + 强信号词 + 裁定优先级）。
-2. 判定输入按权重：**转录内容（50%）> 视频标题/话题（30%）> 群内附带文字（20%）**；命中任一强信号词直接判定；无强信号按内容特征裁定。
-3. 一条视频只归 1 个主类别 + 最多 2 个标签；信号冲突按「技术干货 > 开源GitHub > 行业资讯 > 对标案例 > 观点认知」裁定，并在卡中标注判定依据。
+1. **优先运行 `scripts/distill_pipeline.py <ARCHIVE_ROOT>`**：脚本读取 `video_urls.json` + 各转录前 1600 字符，按 `references/classification.md` 强信号词表自动输出主类别/标签/依据，写入 `distill_tools/classification.json`。**AI 不必逐条读全文**。
+2. 脚本判定为「其他 / 无强信号词命中」的视频（典型：无口播图文帖、纯音乐视频）→ AI 再读标题/标签人工复核；其余直接采用脚本结果。
+3. 规则对照：判定输入权重 **转录内容（50%）> 视频标题/话题（30%）> 群内附带文字（20%）**；一条视频只归 1 个主类别 + 最多 2 个标签；信号冲突按「技术干货 > 开源GitHub > 行业资讯 > 对标案例 > 观点认知」裁定。
+4. 新增类别/标签规律出现时，把词追加进 `distill_pipeline.py` 的 SIGNALS 表（脚本随 Skill 迭代）。
 
 ## 阶段 5：蒸馏归档与交付
 
 1. 按 `references/classification.md` 的「蒸馏产物模板」逐条产出蒸馏卡，**「核心资产」节为必填**（核心图片归档到 `<ARCHIVE_ROOT>/assets/<作者>_<内容描述>.jpg`、提示词 OCR 入卡、项目地址联网核实入卡）。
-2. 产物载体（默认本地 Markdown，用户要求飞书文档时再走 `lark-doc`）：
+2. 省 token 快捷路径：`python scripts/distill_pipeline.py <ARCHIVE_ROOT> --write-cards` 直接生成全部卡片骨架（含元数据表/分类依据/核心资产占位/关键词），AI 只润色「一句话结论 / 核心要点 / 可执行清单 / 关联提示」四节。
+3. 产物载体（默认本地 Markdown，用户要求飞书文档时再走 `lark-doc`）：
    - 每视频一张蒸馏卡：`<ARCHIVE_ROOT>/distilled/<视频ID>.md`
    - 归档总览：`<ARCHIVE_ROOT>/README.md`（汇总表 + 类别分布 + 每类数量 ≥3 时的「共性总结」+ 核心资产留存总表）
-3. 交付给用户：归档总览 + 蒸馏卡（present_files）；核心图片用图片卡片展示；汇总用表格呈现（链接 | 作者 | 内容 | 主类别 | 标签 | 蒸馏卡）。
+4. 交付给用户：归档总览 + 蒸馏卡（present_files）；核心图片用图片卡片展示；汇总用表格呈现（链接 | 作者 | 内容 | 主类别 | 标签 | 蒸馏卡）。
 
 ## 产物规范
 
