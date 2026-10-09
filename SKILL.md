@@ -48,7 +48,7 @@ description: 处理抖音群视频的自动化蒸馏 Skill。当用户要求处�
 2. 失败项记录原因（链接失效/需要登录/无直链），放入失败清单继续，不中断流水线。
 3. 视频下载后立即批量转 MP3（`batch_extract_audio.py`：imageio_ffmpeg，`-ac 1 -ar 16000 -b:a 64k`）到 `raw/<视频ID>.mp3`，供妙记上传（妙记直传 mp4 超配额，必须用音频）。
 
-## 阶段 3：转录（飞书妙记链路）
+## 阶段 3：转录（飞书妙记主链路 + 本地兜底）
 
 1. 对每个 `<ARCHIVE_ROOT>/raw/<视频ID>.mp3`：
    - 上传云空间：**先 `cd` 到 media 所在目录**，再 `lark-cli drive +upload --file ./<视频ID>.mp3 --format json`（lark-cli 拒绝绝对路径与 cwd 外部路径，且不继承 PowerShell 脚本内 `Set-Location`——必须在同一命令串内 `cd`）。
@@ -57,6 +57,13 @@ description: 处理抖音群视频的自动化蒸馏 Skill。当用户要求处�
 2. 等待妙记处理（约 50–90 秒；首次常见 "minute not ready"，继续轮询），再 `lark-cli vc +notes --minute-tokens <token> --output-dir <ARCHIVE_ROOT>/minutes --format json` 读取产物。
 3. 产物落盘：`minutes/artifact-<视频ID>-<minute_token>/transcript.txt`（含逐字稿、摘要、关键词、时长）。
 4. 转录为空/无有效语音（背景音乐覆盖、纯图文帖、无画面纯音频流）：保留元信息，分类阶段按「无有效语音」处理，蒸馏依据标题/话题标签并如实标注。
+
+### 本地转录兜底（飞书额度超限 / 接口不可用时）
+
+- 飞书基础版妙记转写额度：**每自然月 300 分钟**（4 场景共享），超限后新妙记不再产出文字，次月 1 号恢复。日常用量（单批 10 条 × 1 分钟左右 ≈ 8 分钟）远低于额度；此前遇到的 `quota_exceeded 1061043` 是直传 mp4 文件过大，不是月度额度。
+- 兜底工具：`scripts/batch_transcribe_local.py <ARCHIVE_ROOT>`，用 SenseVoice（llama.cpp 版）本地转写全部 `raw/*.mp3`，输出 `minutes/local_<视频ID>.txt`。无需飞书额度、数据不出本地。
+- 一次性安装（放 `distill_tools/funasr-runtime/`）：`llama-funasr-sensevoice.exe`（GitHub release `runtime-llamacpp-v0.1.9`）+ `sensevoice-small-q8.gguf`（242MB，hf-mirror 镜像 ~30MB/s）+ `fsmn-vad.gguf`。
+- 质量对比（实测 83s 口播）：妙记 3min54s 处理、专有名词准确、含摘要/关键词/时间轴；本地 SenseVoice 64.7s、口语准确但专有名词有音译误差、无摘要。**默认仍走妙记，兜底仅供应急/批量**；本地版产物无 Keywords 行，分类时按正文+标题裁定即可。
 
 ## 阶段 4：自动分类（省 token：优先脚本，AI 只复核边界案例）
 
@@ -89,7 +96,7 @@ description: 处理抖音群视频的自动化蒸馏 Skill。当用户要求处�
 ## 已证实死路（不要再走）
 
 - **`lark-im` 搜抖音群**：返回 0 条，群在抖音不在飞书。
-- **faster-whisper 本地转录**：模型下载过慢（数百 MB），弃用。
+- **faster-whisper 本地转录（旧方案）**：模型下载过慢（数百 MB）且中文精度不如 SenseVoice，弃用；本地兜底已改用 SenseVoice（llama.cpp 版，见阶段 3）。
 - **妙记直传 mp4**：`quota_exceeded 1061043`（36MB 失败），必须先转小体积 MP3。
 - **`imapi.douyin.com` 消息接口重放**：`get_message_by_init` 等返回 HTML / Failed to fetch，需签名，不可重放。
 - **逐张点 `.MessageItemShareAwemecontainer` 卡片取 ID**：能跑但极慢，浮层多次渲染空白，已被 multi 批量接口取代。
